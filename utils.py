@@ -35,26 +35,25 @@ def checkpoint(z, logdet):
     return z, logdet
 
 @add_arg_scope
-def revnet3d(name, z, logdet, hps, reverse=False):
+def revnet2d(name, z, logdet, hps, reverse=False):
     with tf.variable_scope(name):
         if not reverse:
             for i in range(hps.depth):
                 z, logdet = checkpoint(z, logdet)
-                z, logdet = revnet3d_step(str(i), z, logdet, hps, reverse)
+                z, logdet = revnet2d_step(str(i), z, logdet, hps, reverse)
             z, logdet = checkpoint(z, logdet)
         else:
             for i in reversed(range(hps.depth)):
-                z, logdet = revnet3d_step(str(i), z, logdet, hps, reverse)
+                z, logdet = revnet2d_step(str(i), z, logdet, hps, reverse)
     return z, logdet
-
 
 # Simpler, new version
 @add_arg_scope
-def revnet3d_step(name, z, logdet, hps, reverse):
+def revnet2d_step(name, z, logdet, hps, reverse):
     with tf.variable_scope(name):
 
         shape = Z.int_shape(z)
-        n_z = shape[4]
+        n_z = shape[3]
         assert n_z % 2 == 0
 
         if not reverse:
@@ -70,43 +69,43 @@ def revnet3d_step(name, z, logdet, hps, reverse):
             else:
                 raise Exception()
 
-            z1 = z[:, :, :, :, :n_z // 2]
-            z2 = z[:, :, :, :, n_z // 2:]
+            z1 = z[:, :, :, :n_z // 2]
+            z2 = z[:, :, :, n_z // 2:]
 
             if hps.flow_coupling == 0:
                 z2 += f("f1", z1, hps.width)
             elif hps.flow_coupling == 1:
                 h = f("f1", z1, hps.width, n_z)
-                shift = h[:, :, :, :, 0::2]
+                shift = h[:, :, :, 0::2]
                 # scale = tf.exp(h[:, :, :, 1::2])
-                scale = tf.nn.sigmoid(h[:, :, :, :, 1::2] + 2.)
+                scale = tf.nn.sigmoid(h[:, :, :, 1::2] + 2.)
                 z2 += shift
                 z2 *= scale
-                logdet += tf.reduce_sum(tf.log(scale), axis=[1, 2, 3, 4])
+                logdet += tf.reduce_sum(tf.log(scale), axis=[1, 2, 3])
             else:
                 raise Exception()
 
-            z = tf.concat([z1, z2], 4)
+            z = tf.concat([z1, z2], 3)
 
         else:
 
-            z1 = z[:, :, :, :, :n_z // 2]
-            z2 = z[:, :, :, :, n_z // 2:]
+            z1 = z[:, :, :, :n_z // 2]
+            z2 = z[:, :, :, n_z // 2:]
 
             if hps.flow_coupling == 0:
                 z2 -= f("f1", z1, hps.width)
             elif hps.flow_coupling == 1:
                 h = f("f1", z1, hps.width, n_z)
-                shift = h[:, :, :, :, 0::2]
+                shift = h[:, :, :, 0::2]
                 # scale = tf.exp(h[:, :, :, 1::2])
-                scale = tf.nn.sigmoid(h[:, :, :, :, 1::2] + 2.)
+                scale = tf.nn.sigmoid(h[:, :, :, 1::2] + 2.)
                 z2 /= scale
                 z2 -= shift
-                logdet -= tf.reduce_sum(tf.log(scale), axis=[1, 2, 3, 4])
+                logdet -= tf.reduce_sum(tf.log(scale), axis=[1, 2, 3])
             else:
                 raise Exception()
 
-            z = tf.concat([z1, z2], 4)
+            z = tf.concat([z1, z2], 3)
 
             if hps.flow_permutation == 0:
                 z = Z.reverse_features("reverse", z, reverse=True)
@@ -124,12 +123,13 @@ def revnet3d_step(name, z, logdet, hps, reverse):
 
 
 def f(name, h, width, n_out=None):
-    n_out = n_out or int(h.get_shape()[4])
+    n_out = n_out or int(h.get_shape()[3])
     with tf.variable_scope(name):
-        h = tf.nn.relu(Z.conv3d("l_1", h, width))
-        h = tf.nn.relu(Z.conv3d("l_2", h, width, filter_size=[1, 1, 1]))
-        h = Z.conv3d_zeros("l_last", h, n_out)
+        h = tf.nn.relu(Z.conv2d("l_1", h, width))
+        h = tf.nn.relu(Z.conv2d("l_2", h, width, filter_size=[1, 1]))
+        h = Z.conv2d_zeros("l_last", h, n_out)
     return h
+
 
 
 # Invertible 1x1 conv
@@ -141,7 +141,7 @@ def invertible_1x1_conv(name, z, logdet, reverse=False):
         with tf.variable_scope(name):
 
             shape = Z.int_shape(z)
-            w_shape = [shape[4], shape[4]]
+            w_shape = [shape[3], shape[3]]
 
             # Sample a random orthogonal matrix:
             w_init = np.linalg.qr(np.random.randn(
@@ -151,22 +151,22 @@ def invertible_1x1_conv(name, z, logdet, reverse=False):
 
             # dlogdet = tf.linalg.LinearOperator(w).log_abs_determinant() * shape[1]*shape[2]
             dlogdet = tf.cast(tf.log(abs(tf.matrix_determinant(
-                tf.cast(w, 'float64')))), 'float32') * shape[1]*shape[2]*shape[3]
+                tf.cast(w, 'float64')))), 'float32') * shape[1]*shape[2]
 
             if not reverse:
 
-                _w = tf.reshape(w, [1, 1, 1] + w_shape)
-                z = tf.nn.conv3d(z, _w, [1, 1, 1, 1, 1],
-                                 'SAME', data_format='NDHWC')
+                _w = tf.reshape(w, [1, 1] + w_shape)
+                z = tf.nn.conv2d(z, _w, [1, 1, 1, 1],
+                                 'SAME', data_format='NHWC')
                 logdet += dlogdet
 
                 return z, logdet
             else:
 
                 _w = tf.matrix_inverse(w)
-                _w = tf.reshape(_w, [1, 1, 1]+w_shape)
-                z = tf.nn.conv3d(z, _w, [1, 1, 1, 1, 1],
-                                 'SAME', data_format='NDHWC')
+                _w = tf.reshape(_w, [1, 1]+w_shape)
+                z = tf.nn.conv2d(z, _w, [1, 1, 1, 1],
+                                 'SAME', data_format='NHWC')
                 logdet -= dlogdet
 
                 return z, logdet
@@ -181,7 +181,7 @@ def invertible_1x1_conv(name, z, logdet, reverse=False):
 
             # Random orthogonal matrix:
             import scipy
-            np_w = scipy.linalg.qr(np.random.randn(shape[4], shape[4]))[
+            np_w = scipy.linalg.qr(np.random.randn(shape[3], shape[3]))[
                 0].astype('float32')
 
             np_p, np_l, np_u = scipy.linalg.lu(np_w)
@@ -204,7 +204,7 @@ def invertible_1x1_conv(name, z, logdet, reverse=False):
             log_s = tf.cast(log_s, dtype)
             u = tf.cast(u, dtype)
 
-            w_shape = [shape[4], shape[4]]
+            w_shape = [shape[3], shape[3]]
 
             l_mask = np.tril(np.ones(w_shape, dtype=dtype), -1)
             l = l * l_mask + tf.eye(*w_shape, dtype=dtype)
@@ -225,28 +225,28 @@ def invertible_1x1_conv(name, z, logdet, reverse=False):
 
             if not reverse:
 
-                w = tf.reshape(w, [1, 1, 1] + w_shape)
-                z = tf.nn.conv3d(z, w, [1, 1, 1, 1, 1],
+                w = tf.reshape(w, [1, 1] + w_shape)
+                z = tf.nn.conv2d(z, w, [1, 1, 1, 1],
                                  'SAME', data_format='NHWC')
-                logdet += tf.reduce_sum(log_s) * (shape[1]*shape[2]*shape[3])
+                logdet += tf.reduce_sum(log_s) * (shape[1]*shape[2])
 
                 return z, logdet
             else:
 
-                w_inv = tf.reshape(w_inv, [1, 1, 1]+w_shape)
-                z = tf.nn.conv3d(
-                    z, w_inv, [1, 1, 1, 1, 1], 'SAME', data_format='NHWC')
-                logdet -= tf.reduce_sum(log_s) * (shape[1]*shape[2]*shape[3])
+                w_inv = tf.reshape(w_inv, [1, 1]+w_shape)
+                z = tf.nn.conv2d(
+                    z, w_inv, [1, 1, 1, 1], 'SAME', data_format='NHWC')
+                logdet -= tf.reduce_sum(log_s) * (shape[1]*shape[2])
 
                 return z, logdet
 
 
 @add_arg_scope
-def split3d(name, level, z, y_onehot, z_prior=None, objective=0.):
+def split2d(name, level, z, y_onehot, z_prior=None, objective=0.):
     with tf.variable_scope(name + str(level)):
-        n_z = Z.int_shape(z)[4]
-        z1 = z[:, :, :, :, :n_z // 2]
-        z2 = z[:, :, :, :, n_z // 2:]
+        n_z = Z.int_shape(z)[3]
+        z1 = z[:, :, :, :n_z // 2]
+        z2 = z[:, :, :, n_z // 2:]
         shape = [tf.shape(z1)[0]] + Z.int_shape(z1)[1:]
         #############################
         # z_p = z1
@@ -259,7 +259,7 @@ def split3d(name, level, z, y_onehot, z_prior=None, objective=0.):
         #     # z_p -= Z.conv2d_zeros('p_o', z_prior, n_z_prior, n_z_p)
         #     z_p += Z.myMLP(3, z_prior, n_z_prior, n_z_p)
         #############################
-        pz = split3d_prior(y_onehot, shape,  z_prior, level)
+        pz = split2d_prior(y_onehot, shape,  z_prior, level)
         objective += pz.logp(z2)
         z1 = Z.squeeze3d(z1)
         eps = pz.get_eps(z2)
@@ -314,16 +314,16 @@ def split3d_reverse(name, level, z,  y_onehot, z_provided, eps, eps_std, z_prior
 
 
 @add_arg_scope
-def split3d_prior(y, shape, z_prior, level):
+def split2d_prior(y, shape, z_prior, level):
     n_z = shape[-1]
-    h = tf.zeros([shape[0]] + shape[1:4] + [2 * n_z])
+    h = tf.zeros([shape[0]] + shape[1:3] + [2 * n_z])
 
-    mean = h[:, :, :, :, :n_z]
-    logsd = h[:, :, :, :, n_z:]
+    mean = h[:, :, :, :n_z]
+    logsd = h[:, :, :, n_z:]
 
     if y is not None:
         temp_v = Z.linear_zeros("y_emb", y, n_z)
-        mean += tf.reshape(temp_v, [-1, 1, 1, 1, n_z])
+        mean += tf.reshape(temp_v, [-1, 1, 1, n_z])
 
 
     if z_prior is not None:

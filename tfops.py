@@ -328,10 +328,10 @@ def linear_MLP(name, x, downsample_factor=4, out_final=0, trainable=True, use_gr
 
 
 @add_arg_scope
-def myconv3d(name, x, n_in, n_out, strides=[1, 1, 1, 1, 1], trainable=True, filter_size=[3,3,3]):
+def myconv2d(name, x, n_in, n_out, strides=[1, 1, 1, 1, 1], trainable=True, filter_size=[3,3,3]):
     w = tf.get_variable("filter" + name, filter_size+[n_in, n_out], tf.float32, trainable=trainable,
                         initializer=tf.initializers.random_uniform(minval=-0.05, maxval=0.05))
-    x = tf.nn.conv3d(x, w, strides=strides, padding='SAME')
+    x = tf.nn.conv2d(x, w, strides=strides, padding='SAME')
     # x += tf.get_variable("b" + name, [1, 1, 1, n_out],
     #                      initializer=tf.zeros_initializer())
     # x *= tf.exp(tf.get_variable("logs" + name,
@@ -346,19 +346,19 @@ def downsample(x, dif, factor):
     if dif[0] == 0:
         x = x
     elif dif[0] > 2 * factor[0]:
-        x = x[:, factor[0]:-factor[0], :, :, :]
+        x = x[:, factor[0]:-factor[0], :, :]
         dif[0] = dif[0] - 2 * factor[0]
     else:
         top = int(np.floor(dif[0] / 2))
         buttom = dif[0] - top
-        x = x[:, top:-buttom, :, :, :]
+        x = x[:, top:-buttom, :, :]
         dif[0] = 0
 
     # height
     if dif[1] == 0:
         x = x
     elif dif[1] > 2 * factor[1]:
-        x = x[:, :, factor[1]:-factor[1], :, :]
+        x = x[:, :, factor[1]:-factor[1], :]
         dif[1] = dif[1] - 2 * factor[1]
     else:
         top = int(np.floor(dif[1] / 2))
@@ -382,30 +382,30 @@ def downsample(x, dif, factor):
 
 
 @add_arg_scope
-def myMLP(layers, x, n_out,  width=256,  dif=[0,0,0], trainable=True):
-    downsample_factor = [int(np.ceil(i / (layers * 2))) for i in dif]
-
-    n_in = x.get_shape()[4]
-    x = myconv3d('0', x, n_in, width, trainable=trainable, filter_size=[5,5,5])
-    x, dif = downsample(x, dif, downsample_factor)
-
+def myMLP(layers, x, n_out,  width=256,  downsample_factor=1, trainable=True, skip=1):
+    n_in = x.get_shape()[3]
+    x = myconv2d('0', x, n_in, width, trainable=trainable)
     for i in range(1, layers):
         if i < layers - 1:
-            x = myconv3d(str(i), x, width, width, strides=[1, 1, 1, 1, 1],
-                         trainable=trainable)
-            x, dif = downsample(x, dif, downsample_factor)
+            if downsample_factor > 1:
+                x = myconv2d(str(i), x, width, width, strides=[1, 2, 2, 1],
+                             trainable=trainable)
+                downsample_factor /= 2
+            else:
+                x = myconv2d(str(i), x, width, width, strides=[1, 1, 1, 1],
+                             trainable=trainable)
         else:
-            x = myconv3d(str(i), x, width, n_out, trainable=trainable)
-            x, dif = downsample(x, dif, downsample_factor)
+            x = myconv2d(str(i), x, width, n_out, trainable=trainable)
     return x
+
 
 
 @add_arg_scope
 def condFun(mean, logsd, z_prior, n_layer=2, trainable=True):
     n_z = int(mean.get_shape()[4])
 
-    dif = [i-j for i, j in zip(z_prior.get_shape().as_list()[1:4],
-                                 mean.get_shape().as_list()[1:4])]
+    dif = [i-j for i, j in zip(z_prior.get_shape().as_list()[1:3],
+                                 mean.get_shape().as_list()[1:3])]
 
     if n_layer == 0:
         w = tf.get_variable("W_prior", mean.get_shape().as_list()[1:], tf.float32, trainable=trainable,
@@ -415,7 +415,7 @@ def condFun(mean, logsd, z_prior, n_layer=2, trainable=True):
 
     elif n_layer == 1:
         n_in = z_prior.get_shape()[4]
-        z_prior = myconv3d('0', z_prior, n_in, n_z, trainable=trainable, filter_size=[5, 5, 5])
+        z_prior = myconv2d('0', z_prior, n_in, n_z, trainable=trainable, filter_size=[5, 5, 5])
 
         mean += z_prior[:, :, :, :, :n_z]
         logsd += 0  # z_prior[:, :, :, n_z:]
@@ -432,19 +432,19 @@ def condFun(mean, logsd, z_prior, n_layer=2, trainable=True):
 @add_arg_scope
 def myMLP_2x_downsample(layers, x, n_out,  width=256,  downsample_factor=1, trainable=True, skip=1):
     n_in = x.get_shape()[4]
-    x = myconv3d('0', x, n_in, width, trainable=trainable, filter_size=[5,5,5])
+    x = myconv2d('0', x, n_in, width, trainable=trainable, filter_size=[5,5,5])
     for i in range(1, layers):
         if i < layers - 1:
             if downsample_factor > 1:
-                x = myconv3d(str(i), x, width, width, strides=[1, 2, 2, 2, 1],
+                x = myconv2d(str(i), x, width, width, strides=[1, 2, 2, 2, 1],
                              trainable=trainable)
                 downsample_factor /= 2
             else:
-                x = myconv3d(str(i), x, width, width, strides=[1, 1, 1, 1, 1],
+                x = myconv2d(str(i), x, width, width, strides=[1, 1, 1, 1, 1],
                              trainable=trainable)
 
     else:
-        x = myconv3d(str(i), x, width, n_out, trainable=trainable)
+        x = myconv2d(str(i), x, width, n_out, trainable=trainable)
     return x
 
 # @add_arg_scope
@@ -483,7 +483,7 @@ def condFun_2x_downsample(mean, logsd, z_prior, n_layer=2, trainable=True):
         if downsample_factor > 2:
             raise ValueError('One layer network for a large downsample_factor.')
 
-        z_prior = myconv3d('l1_Net', z_prior, n_z, n_z ,
+        z_prior = myconv2d('l1_Net', z_prior, n_z, n_z ,
                            strides=[1, downsample_factor, downsample_factor, downsample_factor,1],
                            trainable=trainable)
         mean += z_prior[:,:,:,:,n_z]

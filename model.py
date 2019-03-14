@@ -96,7 +96,7 @@ def codec(hps):
             eps = []
             z_list = []
             for i in range(hps.n_levels):
-                z, objective = revnet3d(str(i), z, objective, hps)
+                z, objective = revnet2d(str(i), z, objective, hps)
                 if i < hps.n_levels - 1:
                     if z_prior is not None:
                         z, z2, objective, _eps = split3d("pool" + str(i), hps.n_l, z, y, z_prior[i], objective=objective)
@@ -191,8 +191,8 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
 
     # Only for decoding/init, rest use iterators directly
     with tf.name_scope('input'):
-        X_m = tf.placeholder(tf.float32, [None] + hps.mri_size + [1], name='image_mri')
-        X_p = tf.placeholder(tf.float32, [None] + hps.pet_size + [1], name='image_pet')
+        X_m = tf.placeholder(tf.float32, [None] + hps.in_size + [3], name='image_input')
+        X_p = tf.placeholder(tf.float32, [None] + hps.out_size + [3], name='image_ouput')
         Y = tf.placeholder(tf.float32, [None], name='label')
         lr = tf.placeholder(tf.float32, None, name='learning_rate')
 
@@ -204,25 +204,26 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
         x_u = x_u / hps.n_bins - .5
         x_o = x_o / hps.n_bins - .5
         if not hps.inference:
-            x_u += tf.random_uniform(tf.shape(x_u), 0, 1. / 512)
-            x_o += tf.random_uniform(tf.shape(x_o), 0, 1. / 512)
+            x_u += tf.random_uniform(tf.shape(x_u), 0, 1. / 256)
+            x_o += tf.random_uniform(tf.shape(x_o), 0, 1. / 256)
 
         return x_u, x_o
 
     # postprocessing ...............................
     def postprocess(x):
-        return tf.clip_by_value(tf.floor((x + .5) * hps.n_bins * (255. / hps.n_bins)), -10, 300)
+        return tf.clip_by_value(tf.floor((x + .5) * hps.n_bins * (255. / hps.n_bins)), 0, 255)
         #return tf.clip_by_value(tf.floor((x + .5) * hps.n_bins * (255. / hps.n_bins)), 0, 255)
         # return tf.floor((x + .5) * hps.n_bins * (255. / hps.n_bins))
 
     # cut-off l1_loss
-    def l1_loss(x, y, cut_off=False):
-        l1 = tf.losses.absolute_difference(x, y)
+    def losses(x, y, type='l1'):
+        if type=='l1':
+            l = tf.losses.absolute_difference(x, y)
         # if cut_off:
         #     return tf.clip_by_value(l1, 0, hps.cut_off)
         # else:
         #     return l1
-        return l1
+        return l
 
     def _f_loss(x_m, x_p, y, is_training, reuse=False):
 
@@ -294,11 +295,11 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
                     else:
                         use_grl = True
                     y_o_logits = Z.linear_MLP('discriminator_O_' + str(i), zs_o[i], out_final=hps.n_y, use_grl=use_grl)
-                    regression_loss_o_list.append(l1_loss(y_onehot, y_o_logits, use_grl) / np.log(2.))
+                    regression_loss_o_list.append(losses(y_onehot, y_o_logits, type='l1') / np.log(2.))
 
                 # Regression loss
                 # bits_y = tf.zeros_like(bits_x_u)
-                regression_loss_u = tf.losses.absolute_difference(y_onehot, y_u_logits) / np.log(2.)
+                regression_loss_u = losses(y_onehot, y_u_logits, type='l1') / np.log(2.)
                 regression_loss_o = sum(regression_loss_o_list) / len(regression_loss_o_list)
 
 
@@ -352,7 +353,7 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
     ###### Get the prior from the observed #################
     with tf.variable_scope('model', reuse=True):
         _, z_o= preprocess(X_m, X_p)
-        z_o = Z.squeeze3d(z_o, 2)  # > 16x16x12
+        z_o = Z.squeeze2d(z_o, 2)  # > 16x16x12
         objective_o = tf.zeros_like(z_o, dtype='float32')[:, 0, 0, 0, 0]
         #objective += - np.log(hps.n_bins) * np.prod(Z.int_shape(z_o)[1:])
         zs_o, _, _ = encoder('m_o', z_o, objective_o, y=None)
