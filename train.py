@@ -564,7 +564,7 @@ if __name__ == "__main__":
                         help="Anchor size for deciding batch size")
     parser.add_argument("--width", type=int, default=512,
                         help="Width of hidden layers")
-    parser.add_argument("--depth", type=int, default=2,
+    parser.add_argument("--depth", type=int, default=8,
                         help="Depth of network")
     parser.add_argument("--weight_y", type=float, default=0.01,
                         help="Weight of log p(y|x) in weighted loss")
