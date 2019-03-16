@@ -21,7 +21,7 @@ def abstract_model_xy(sess, hps, feeds, train_iterator, test_iterator, data_init
     all_params = tf.trainable_variables()
 
     if not hps.inference:  # computing gradients during training time
-        with tf.device('/gpu:1'):
+        with tf.device('/gpu:0'):
             if hps.gradient_checkpointing == 1:
                 from memory_saving_gradients import gradients
                 gs = gradients(loss_train, all_params)
@@ -81,8 +81,8 @@ def abstract_model_xy(sess, hps, feeds, train_iterator, test_iterator, data_init
         with Z.arg_scope([Z.get_variable_ddi, Z.actnorm], init=True):
             results_init = f_loss(None, True, reuse=True)
         sess.run(tf.global_variables_initializer())
-        sess.run(results_init, {feeds['x_m']: data_init['x_mri'],
-                                feeds['x_p']: data_init['x_pet'],
+        sess.run(results_init, {feeds['x_m']: data_init['x_m'],
+                                feeds['x_p']: data_init['x_p'],
                                 feeds['y']: data_init['y']})
     sess.run(hvd.broadcast_global_variables(0))
 
@@ -99,9 +99,9 @@ def codec(hps):
                 z, objective = revnet2d(str(i), z, objective, hps)
                 if i < hps.n_levels - 1:
                     if z_prior is not None:
-                        z, z2, objective, _eps = split3d("pool" + str(i), hps.n_l, z, y, z_prior[i], objective=objective)
+                        z, z2, objective, _eps = split2d("pool" + str(i), hps.n_l, z, y, z_prior[i], objective=objective)
                     else:
-                        z, z2, objective, _eps = split3d("pool" + str(i), hps.n_l, z, y, objective=objective)
+                        z, z2, objective, _eps = split2d("pool" + str(i), hps.n_l, z, y, objective=objective)
                     eps.append(_eps)
                     z_list.append(z2)
             z_list.append(z) # append z finally
@@ -115,18 +115,18 @@ def codec(hps):
                     else: eps_ = None
                     if z_prior is not None:
                         if z_provided is not None:
-                            z = split3d_reverse("pool" + str(i), hps.n_l, z, y, z_provided[i],  eps=eps_, eps_std=eps_std,
+                            z = split2d_reverse("pool" + str(i), hps.n_l, z, y, z_provided[i],  eps=eps_, eps_std=eps_std,
                                                 z_prior=z_prior[i])
                         else:
-                            z = split3d_reverse("pool" + str(i), hps.n_l, z, y, z_provided=None, eps=eps_, eps_std=eps_std, z_prior=z_prior[i])
+                            z = split2d_reverse("pool" + str(i), hps.n_l, z, y, z_provided=None, eps=eps_, eps_std=eps_std, z_prior=z_prior[i])
 
                     else:
                         if z_provided is not None:
-                            z = split3d_reverse("pool" + str(i), hps.n_l, z, y,  z_provided[i],  eps=eps_, eps_std=eps_std)
+                            z = split2d_reverse("pool" + str(i), hps.n_l, z, y,  z_provided[i],  eps=eps_, eps_std=eps_std)
                         else:
-                            z = split3d_reverse("pool" + str(i), hps.n_l, z,  y, z_provided=None, eps=eps_, eps_std=eps_std)
+                            z = split2d_reverse("pool" + str(i), hps.n_l, z,  y, z_provided=None, eps=eps_, eps_std=eps_std)
 
-                z, _ = revnet3d(str(i), z, 0, hps, reverse=True)
+                z, _ = revnet2d(str(i), z, 0, hps, reverse=True)
 
         return z
 
@@ -139,16 +139,16 @@ def prior(name, top_shape, hps, y, z_prior=None):
     with tf.variable_scope(name, reuse=tf.AUTO_REUSE):
 
         n_z = top_shape[-1]
-        h = tf.zeros([top_shape[0]]+top_shape[1:4]+[2*n_z])
+        h = tf.zeros([top_shape[0]]+top_shape[1:3]+[2*n_z])
         if hps.learntop:
             h = Z.conv2d_zeros('p', h, 2*n_z)
 
         if y is not None:
             temp_v = Z.linear_zeros("y_emb", y, n_z*2)
-            h += tf.reshape(temp_v, [-1, 1, 1, 1,  n_z * 2])
+            h += tf.reshape(temp_v, [-1, 1, 1,  n_z * 2])
 
-        mean = h[:, :, :, :, :n_z]
-        logsd = h[:, :, :, :, n_z:]
+        mean = h[:, :, :, :n_z]
+        logsd = h[:, :, :, n_z:]
 
         ######### embedding the z_prior ##############
         if z_prior is not None:
@@ -171,7 +171,7 @@ def prior(name, top_shape, hps, y, z_prior=None):
             z = pz.sample2(eps)
         elif eps_std is not None:
             # Sample with given eps_std
-            z = pz.sample2(pz.eps * tf.reshape(eps_std, [-1, 1, 1, 1, 1]))
+            z = pz.sample2(pz.eps * tf.reshape(eps_std, [-1, 1, 1, 1]))
         else:
             # Sample normally
             z = pz.sample
@@ -191,8 +191,8 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
 
     # Only for decoding/init, rest use iterators directly
     with tf.name_scope('input'):
-        X_m = tf.placeholder(tf.float32, [None] + hps.in_size + [3], name='image_input')
-        X_p = tf.placeholder(tf.float32, [None] + hps.out_size + [3], name='image_ouput')
+        X_m = tf.placeholder(tf.float32, [None] + hps.mri_size, name='image_input')
+        X_p = tf.placeholder(tf.float32, [None] + hps.pet_size, name='image_ouput')
         Y = tf.placeholder(tf.float32, [None], name='label')
         lr = tf.placeholder(tf.float32, None, name='learning_rate')
 
@@ -216,9 +216,11 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
         # return tf.floor((x + .5) * hps.n_bins * (255. / hps.n_bins))
 
     # cut-off l1_loss
-    def losses(x, y, type='l1'):
+    def losses(pred, label, type='l1'):
         if type=='l1':
-            l = tf.losses.absolute_difference(x, y)
+            l = tf.losses.absolute_difference(pred, label)
+        elif type=='crossEntropy':
+            l = tf.nn.softmax_cross_entropy_with_logits_v2(labels=label,logits=pred)
         # if cut_off:
         #     return tf.clip_by_value(l1, 0, hps.cut_off)
         # else:
@@ -230,6 +232,7 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
         with tf.variable_scope('model', reuse=reuse):
             if hps.ycond:
                 y_onehot = tf.expand_dims(y, 1)#tf.cast(tf.one_hot(y, hps.n_y, 1, 0), 'float32')
+                # y_onehot = tf.cast(tf.one_hot(y, hps.n_y, 1, 0), 'float32')
                 if hps.att in ['age', 'group']:
                     y_onehot -= 0.5
             else:
@@ -240,22 +243,22 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
             # dequantize data
             # z += tf.random_uniform(tf.shape(z), 0, 1. / hps.n_bins)
 
-            objective_u = tf.zeros_like(x_u, dtype='float32')[:, 0, 0, 0, 0]
+            objective_u = tf.zeros_like(x_u, dtype='float32')[:, 0, 0, 0]
             objective_u += - np.log(256.) * np.prod(Z.int_shape(x_u)[1:])
 
-            objective_o = tf.zeros_like(x_o, dtype='float32')[:, 0, 0, 0, 0]
+            objective_o = tf.zeros_like(x_o, dtype='float32')[:, 0, 0, 0]
             objective_o += - np.log(256.) * np.prod(Z.int_shape(x_o)[1:])
 
 
             ############# Encode #################
             # observed
-            z_o = Z.squeeze3d(x_o, 2)  # > 16x16x12
+            z_o = Z.squeeze2d(x_o, 2)  # > 16x16x12
             zs_o, objective_o, eps_o = encoder('m_o', z_o, objective_o, y=None)
             z_o = zs_o[-1]
             z_2_o = zs_o[:-1]
 
             # unobserved
-            z_u = Z.squeeze3d(x_u, 2)  # > 16x16x12
+            z_u = Z.squeeze2d(x_u, 2)  # > 16x16x12
             zs_u, objective_u, _ = encoder('m_u', z_u, objective_u, y=None, z_prior=z_2_o)
             z_u = zs_u[-1]
 
@@ -276,11 +279,11 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
             # for unobserved
             nobj_u = - objective_u
             bits_x_u = nobj_u / (np.log(2.) * int(x_u.get_shape()[1]) * int(
-                x_u.get_shape()[2]) * int(x_u.get_shape()[3]) * int(x_u.get_shape()[4]))  # bits per subpixel.
+                x_u.get_shape()[2]) * int(x_u.get_shape()[3]))  # bits per subpixel.
             # for observed
             nobj_o = - objective_o
             bits_x_o = nobj_o / (np.log(2.) * int(x_o.get_shape()[1]) * int(
-                x_o.get_shape()[2]) * int(x_o.get_shape()[3]) * int(x_u.get_shape()[4]))  # bits per subpixel
+                x_o.get_shape()[2]) * int(x_o.get_shape()[3]))  # bits per subpixel
             #######################################
 
             # Predictive loss
@@ -345,7 +348,7 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
             _, sample, _ ,_ ,_= prior("prior_u", top_shape, hps, y_onehot, z_prior=None)
             z = sample(eps_std=eps_std)
             z = decoder("m_u", y=None, z=z, z_prior=z_o_m, eps_std=eps_std)
-            z = Z.unsqueeze3d(z, 2)  # 8x8x12 -> 16x16x3
+            z = Z.unsqueeze2d(z, 2)  # 8x8x12 -> 16x16x3
             x = postprocess(z)
 
         return x
@@ -354,7 +357,7 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
     with tf.variable_scope('model', reuse=True):
         _, z_o= preprocess(X_m, X_p)
         z_o = Z.squeeze2d(z_o, 2)  # > 16x16x12
-        objective_o = tf.zeros_like(z_o, dtype='float32')[:, 0, 0, 0, 0]
+        objective_o = tf.zeros_like(z_o, dtype='float32')[:, 0, 0, 0]
         #objective += - np.log(hps.n_bins) * np.prod(Z.int_shape(z_o)[1:])
         zs_o, _, _ = encoder('m_o', z_o, objective_o, y=None)
         z_o = zs_o[-1]

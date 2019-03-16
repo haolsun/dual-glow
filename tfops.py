@@ -94,15 +94,15 @@ def actnorm(name, x, scale=1., logdet=None, logscale_factor=3., batch_variance=F
 def actnorm_center(name, x, reverse=False):
     shape = x.get_shape()
     with tf.variable_scope(name):
-        assert len(shape) == 2 or len(shape) == 5
+        assert len(shape) == 2 or len(shape) == 4
         if len(shape) == 2:
             x_mean = tf.reduce_mean(x, [0], keepdims=True)
             b = get_variable_ddi(
                 "b", (1, int_shape(x)[1]), initial_value=-x_mean)
-        elif len(shape) == 5:
-            x_mean = tf.reduce_mean(x, [0, 1, 2, 3], keepdims=True)
+        elif len(shape) == 4:
+            x_mean = tf.reduce_mean(x, [0, 1, 2], keepdims=True)
             b = get_variable_ddi(
-                "b", (1, 1, 1, 1, int_shape(x)[4]), initial_value=-x_mean)
+                "b", (1, 1, 1, int_shape(x)[3]), initial_value=-x_mean)
 
         if not reverse:
             x += b
@@ -118,16 +118,16 @@ def actnorm_center(name, x, reverse=False):
 def actnorm_scale(name, x, scale=1., logdet=None, logscale_factor=3., batch_variance=False, reverse=False, init=False, trainable=True):
     shape = x.get_shape()
     with tf.variable_scope(name), arg_scope([get_variable_ddi], trainable=trainable):
-        assert len(shape) == 2 or len(shape) == 5
+        assert len(shape) == 2 or len(shape) == 4
         if len(shape) == 2:
             x_var = tf.reduce_mean(x**2, [0], keepdims=True)
             logdet_factor = 1
             _shape = (1, int_shape(x)[1])
 
-        elif len(shape) == 5:
-            x_var = tf.reduce_mean(x**2, [0, 1, 2, 3], keepdims=True)
-            logdet_factor = int(shape[1])*int(shape[2])*int(shape[3])
-            _shape = (1, 1, 1, 1, int_shape(x)[4])
+        elif len(shape) == 4:
+            x_var = tf.reduce_mean(x**2, [0, 1, 2], keepdims=True)
+            logdet_factor = int(shape[1])*int(shape[2])
+            _shape = (1, 1, 1, int_shape(x)[3])
 
         if batch_variance:
             x_var = tf.reduce_mean(x**2, keepdims=True)
@@ -197,39 +197,60 @@ def linear_zeros(name, x, width, logscale_factor=3):
                                     [1, width], initializer=tf.zeros_initializer()) * logscale_factor)
         return x
 
+
+@add_arg_scope
+def conv2d_zeros(name, x, width, filter_size=[3, 3], stride=[1, 1], pad="SAME", logscale_factor=3, skip=1, edge_bias=True):
+    with tf.variable_scope(name):
+        if edge_bias and pad == "SAME":
+            x = add_edge_padding(x, filter_size)
+            pad = 'VALID'
+
+        n_in = int(x.get_shape()[3])
+        stride_shape = [1] + stride + [1]
+        filter_shape = filter_size + [n_in, width]
+        w = tf.get_variable("W", filter_shape, tf.float32,
+                            initializer=tf.zeros_initializer())
+        if skip == 1:
+            x = tf.nn.conv2d(x, w, stride_shape, pad, data_format='NHWC')
+        else:
+            assert stride[0] == 1 and stride[1] == 1
+            x = tf.nn.atrous_conv2d(x, w, skip, pad)
+        x += tf.get_variable("b", [1, 1, 1, width],
+                             initializer=tf.zeros_initializer())
+        x *= tf.exp(tf.get_variable("logs",
+                                    [1, width], initializer=tf.zeros_initializer()) * logscale_factor)
+    return x
+
 # Slow way to add edge padding
 def add_edge_padding(x, filter_size):
     assert filter_size[0] % 2 == 1
-    if filter_size[0] == 1 and filter_size[1] == 1 and filter_size[2] == 1:
+    if filter_size[0] == 1 and filter_size[1] == 1:
         return x
-    a = (filter_size[0] - 1) // 2  # anteroposterior padding size (depth)
-    b = (filter_size[1] - 1) // 2  # vertical padding size (height)
-    c = (filter_size[2] - 1) // 2  # horizontal padding size (width)
+    a = (filter_size[0] - 1) // 2  # vertical padding size
+    b = (filter_size[1] - 1) // 2  # horizontal padding size
     if True:
-        x = tf.pad(x, [[0, 0], [a, a], [b, b], [c, c], [0, 0]])
-        name = "_".join([str(dim) for dim in [a, b, c, *int_shape(x)[1:4]]])
+        x = tf.pad(x, [[0, 0], [a, a], [b, b], [0, 0]])
+        name = "_".join([str(dim) for dim in [a, b, *int_shape(x)[1:3]]])
         pads = tf.get_collection(name)
         if not pads:
             if hvd.rank() == 0:
                 print("Creating pad", name)
-            pad = np.zeros([1] + int_shape(x)[1:4] + [1], dtype='float32')
-            pad[:, :a, :, :, 0] = 1.
-            pad[:, -a:, :, :, 0] = 1.
-            pad[:, :, :b, :, 0] = 1.
-            pad[:, :, -b:, :, 0] = 1.
-            pad[:, :, :, :c, 0] = 1.
-            pad[:, :, :, -c:, 0] = 1.
+            pad = np.zeros([1] + int_shape(x)[1:3] + [1], dtype='float32')
+            pad[:, :a, :, 0] = 1.
+            pad[:, -a:, :, 0] = 1.
+            pad[:, :, :b, 0] = 1.
+            pad[:, :, -b:, 0] = 1.
             pad = tf.convert_to_tensor(pad)
             tf.add_to_collection(name, pad)
         else:
             pad = pads[0]
-        pad = tf.tile(pad, [tf.shape(x)[0], 1, 1, 1, 1])
-        x = tf.concat([x, pad], axis=4)
+        pad = tf.tile(pad, [tf.shape(x)[0], 1, 1, 1])
+        x = tf.concat([x, pad], axis=3)
     else:
-        pad = tf.pad(tf.zeros_like(x[:, :, :, :, :1]) - 1,
-                     [[0, 0], [a, a], [b, b], [c, c], [0, 0]]) + 1
-        x = tf.pad(x, [[0, 0], [a, a], [b, b], [c, c], [0, 0]])
-        x = tf.concat([x, pad], axis=4)
+        pad = tf.pad(tf.zeros_like(x[:, :, :, :1]) - 1,
+                     [[0, 0], [a, a], [b, b], [0, 0]]) + 1
+        x = tf.pad(x, [[0, 0], [a, a], [b, b], [0, 0]])
+        x = tf.concat([x, pad], axis=3)
     return x
 
 
@@ -265,6 +286,36 @@ def conv3d(name, x, width, filter_size=[3, 3, 3], stride=[1, 1, 1], pad="SAME", 
                                    width), [-1, 1, 1, 1, width])
     return x
 
+@add_arg_scope
+def conv2d(name, x, width, filter_size=[3, 3], stride=[1, 1], pad="SAME", do_weightnorm=False, do_actnorm=True, context1d=None, skip=1, edge_bias=True):
+    with tf.variable_scope(name):
+        if edge_bias and pad == "SAME":
+            x = add_edge_padding(x, filter_size)
+            pad = 'VALID'
+
+        n_in = int(x.get_shape()[3])
+
+        stride_shape = [1] + stride + [1]
+        filter_shape = filter_size + [n_in, width]
+        w = tf.get_variable("W", filter_shape, tf.float32,
+                            initializer=default_initializer())
+        if do_weightnorm:
+            w = tf.nn.l2_normalize(w, [0, 1, 2])
+        if skip == 1:
+            x = tf.nn.conv2d(x, w, stride_shape, pad, data_format='NHWC')
+        else:
+            assert stride[0] == 1 and stride[1] == 1
+            x = tf.nn.atrous_conv2d(x, w, skip, pad)
+        if do_actnorm:
+            x = actnorm("actnorm", x)
+        else:
+            x += tf.get_variable("b", [1, 1, 1, width],
+                                 initializer=tf.zeros_initializer())
+
+        if context1d != None:
+            x += tf.reshape(linear("context", context1d,
+                                   width), [-1, 1, 1, width])
+    return x
 
 @add_arg_scope
 def separable_conv2d(name, x, width, filter_size=[3, 3], stride=[1, 1], padding="SAME", do_actnorm=True, std=0.05):
@@ -293,7 +344,7 @@ def separable_conv2d(name, x, width, filter_size=[3, 3], stride=[1, 1], padding=
 
 @add_arg_scope
 def linear_MLP(name, x, downsample_factor=4, out_final=0, trainable=True, use_grl=False):
-    n_in = int(x.get_shape()[4])
+    n_in = int(x.get_shape()[3])
     ###############################
     ################ depends on the images_size
     ###############################
@@ -309,12 +360,12 @@ def linear_MLP(name, x, downsample_factor=4, out_final=0, trainable=True, use_gr
             width = n_in
             for i in range(0, n_l):
                 n_out = width * downsample_factor
-                w = tf.get_variable("filter" + str(i), [3, 3, 3, width, n_out], tf.float32, trainable=trainable,
+                w = tf.get_variable("filter" + str(i), [3, 3,  width, n_out], tf.float32, trainable=trainable,
                                     initializer=tf.initializers.random_uniform(minval=-0.01, maxval=0.01))
-                x = tf.nn.conv3d(x, w, strides=[1, 2, 2, 2, 1], padding='SAME')
+                x = tf.nn.conv2d(x, w, strides=[1, 2, 2, 1], padding='SAME')
                 b = tf.get_variable("b" + str(i), [n_out], initializer=tf.zeros_initializer())
                 x = tf.nn.bias_add(x, b)
-                x = tf.nn.pool(x, window_shape=[2, 2, 2], pooling_type='AVG', strides=[2, 2, 2], padding='SAME')
+                x = tf.nn.pool(x, window_shape=[2, 2], pooling_type='AVG', strides=[2, 2], padding='SAME')
                 x = tf.nn.leaky_relu(x)
                 width = n_out
             x = tf.contrib.layers.flatten(x)
@@ -328,7 +379,7 @@ def linear_MLP(name, x, downsample_factor=4, out_final=0, trainable=True, use_gr
 
 
 @add_arg_scope
-def myconv2d(name, x, n_in, n_out, strides=[1, 1, 1, 1, 1], trainable=True, filter_size=[3,3,3]):
+def myconv2d(name, x, n_in, n_out, strides=[1, 1, 1, 1], trainable=True, filter_size=[3,3]):
     w = tf.get_variable("filter" + name, filter_size+[n_in, n_out], tf.float32, trainable=trainable,
                         initializer=tf.initializers.random_uniform(minval=-0.05, maxval=0.05))
     x = tf.nn.conv2d(x, w, strides=strides, padding='SAME')
@@ -402,7 +453,7 @@ def myMLP(layers, x, n_out,  width=256,  downsample_factor=1, trainable=True, sk
 
 @add_arg_scope
 def condFun(mean, logsd, z_prior, n_layer=2, trainable=True):
-    n_z = int(mean.get_shape()[4])
+    n_z = int(mean.get_shape()[3])
 
     dif = [i-j for i, j in zip(z_prior.get_shape().as_list()[1:3],
                                  mean.get_shape().as_list()[1:3])]
@@ -414,14 +465,14 @@ def condFun(mean, logsd, z_prior, n_layer=2, trainable=True):
         logsd = logsd#0.5 * tf.log(tf.subtract(tf.exp(2 * logsd), w ** 2))
 
     elif n_layer == 1:
-        n_in = z_prior.get_shape()[4]
-        z_prior = myconv2d('0', z_prior, n_in, n_z, trainable=trainable, filter_size=[5, 5, 5])
+        n_in = z_prior.get_shape()[3]
+        z_prior = myconv2d('0', z_prior, n_in, n_z, trainable=trainable, filter_size=[3,3])
 
-        mean += z_prior[:, :, :, :, :n_z]
+        mean += z_prior[:, :, :,  :n_z]
         logsd += 0  # z_prior[:, :, :, n_z:]
     else:
-        z_prior = myMLP(n_layer, z_prior, n_z, dif=dif, trainable=trainable)
-        mean += z_prior[:, :, :, :, :n_z]
+        z_prior = myMLP(n_layer, z_prior, n_z,  trainable=trainable)
+        mean += z_prior[:, :, :,  :n_z]
         logsd += 0#z_prior[:, :, :, n_z:]
 
     return mean, logsd
@@ -698,8 +749,8 @@ def embedding(name, y, n_y, width):
 def flatten_sum(logps):
     if len(logps.get_shape()) == 2:
         return tf.reduce_sum(logps, [1])
-    elif len(logps.get_shape()) == 5:
-        return tf.reduce_sum(logps, [1, 2, 3, 4])
+    elif len(logps.get_shape()) == 4:
+        return tf.reduce_sum(logps, [1, 2, 3])
     else:
         raise Exception()
 

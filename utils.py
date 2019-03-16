@@ -26,12 +26,12 @@ class ResultLogger(object):
 
 def checkpoint(z, logdet):
     zshape = Z.int_shape(z)
-    z = tf.reshape(z, [-1, zshape[1]*zshape[2]*zshape[3]*zshape[4]])
+    z = tf.reshape(z, [-1, zshape[1]*zshape[2]*zshape[3]])
     logdet = tf.reshape(logdet, [-1, 1])
     combined = tf.concat([z, logdet], axis=1)
     tf.add_to_collection('checkpoints', combined)
     logdet = combined[:, -1]
-    z = tf.reshape(combined[:, :-1], [-1, zshape[1], zshape[2], zshape[3], zshape[4]])
+    z = tf.reshape(combined[:, :-1], [-1, zshape[1], zshape[2], zshape[3]])
     return z, logdet
 
 @add_arg_scope
@@ -261,16 +261,16 @@ def split2d(name, level, z, y_onehot, z_prior=None, objective=0.):
         #############################
         pz = split2d_prior(y_onehot, shape,  z_prior, level)
         objective += pz.logp(z2)
-        z1 = Z.squeeze3d(z1)
+        z1 = Z.squeeze2d(z1)
         eps = pz.get_eps(z2)
         return z1, z2, objective, eps,
 
 
 @add_arg_scope
-def split3d_reverse(name, level, z,  y_onehot, z_provided, eps, eps_std, z_prior=None):
+def split2d_reverse(name, level, z,  y_onehot, z_provided, eps, eps_std, z_prior=None):
     with tf.variable_scope(name + str(level)):
 
-        z1 = Z.unsqueeze3d(z)
+        z1 = Z.unsqueeze2d(z)
 
         # n_z = Z.int_shape(z1)[3]
         shape = [tf.shape(z1)[0]] + Z.int_shape(z1)[1:]
@@ -287,13 +287,13 @@ def split3d_reverse(name, level, z,  y_onehot, z_provided, eps, eps_std, z_prior
         #     z_p += Z.myMLP(3, z_prior, n_z_prior, n_z)
         # #############################
 
-        pz = split3d_prior(y_onehot, shape, z_prior, level)
+        pz = split2d_prior(y_onehot, shape, z_prior, level)
 
         if z_provided is not None:
             y_onehot2 = (y_onehot - 0.5) * (-1) + 0.5
             # y_onehot = tf.zeros_like(y_onehot)
             # y_onehot2 = tf.ones_like(y_onehot)
-            pz2_ = split3d_prior(y_onehot2, shape, z_prior, level)
+            pz2_ = split2d_prior(y_onehot2, shape, z_prior, level)
             # z2 = z_provided +  pz.mean - pz2_.mean
             z2 = z_provided  - pz.mean + pz2_.mean #+  0.5 * (pz.logsd - pz2_.logsd)
             # z2 = pz2_.sample2(pz.get_eps(z_provided * 0.5))
@@ -304,12 +304,12 @@ def split3d_reverse(name, level, z,  y_onehot, z_provided, eps, eps_std, z_prior
                 z2 = pz.sample2(eps)
             elif eps_std is not None:
                 # Sample with given eps_std
-                z2 = pz.sample2(pz.eps * tf.reshape(eps_std, [-1, 1, 1, 1, 1]))
+                z2 = pz.sample2(pz.eps * tf.reshape(eps_std, [-1, 1, 1, 1]))
             else:
                 # Sample normally
                 z2 = pz.sample
 
-        z = tf.concat([z1, z2], 4)
+        z = tf.concat([z1, z2], 3)
         return z
 
 

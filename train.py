@@ -130,7 +130,7 @@ def init_visualizations(hps, model, logdir, iterator):
         x_p = val_x_p[:n_batch]
         y = val_y[:n_batch]
         # temperatures = [0., .25, .5, .626, .75, .875, 1.] #previously
-        temperatures = [0., .25, .5, .6, .7, .8, .9, 1.]
+        # temperatures = [0., .25, .5, .6, .7, .8, .9, 1.]
 
         x_samples = []
         x_samples.append(sample_batch(x_m, x_p, y, [.0]*n_batch))
@@ -147,12 +147,12 @@ def init_visualizations(hps, model, logdir, iterator):
             x_sample = np.reshape(
                 x_samples[i], [n_batch] + hps.pet_size)
             ############## save nii file #############
-            for j in range(x_sample.shape[0]):
-                nii = nib.Nifti1Image(x_sample[j,:,:,:], np.eye(4))
-                nib.save(nii, logdir + 'epoch_{}_sub_{}_sample_{}.nii'.format(epoch, j, i))
+            # for j in range(x_sample.shape[0]):
+            #     nii = nib.Nifti1Image(x_sample[j,:,:,:], np.eye(4))
+            #     nib.save(nii, logdir + 'epoch_{}_sub_{}_sample_{}.nii'.format(epoch, j, i))
 
             ##########################################
-            x_sample = x_sample[:,30,:,:]
+            # x_sample = x_sample[:,30,:,:]
             graphics.save_raster(x_sample, logdir +
                                  'epoch_{}_sample_{}.png'.format(epoch, i))
 
@@ -163,23 +163,18 @@ def init_visualizations(hps, model, logdir, iterator):
 # ===
 def get_data(hps, sess):
     if hps.pet_size == -1:
-        hps.pet_size = {'brain3D': [48, 64, 48]}[hps.problem]
+        hps.pet_size = {'brain2D': [128, 96, 1]}[hps.problem]
     if hps.mri_size == -1:
-        hps.mri_size = {'brain3D': [48, 64, 48]}[hps.problem]
+        hps.mri_size = {'brain2D': [128, 96, 1]}[hps.problem]
     if hps.n_test == -1:
-        hps.n_test = {'brain3D': 80}[hps.problem]
-    hps.n_y = {'brain3D': 1}[hps.problem]
+        hps.n_test = {'brain2D': 80}[hps.problem]
+    hps.n_y = {'brain2D': 1}[hps.problem]
 
     if hps.data_dir == "":
-        hps.data_dir = {'brain3D': './data_loaders/Brain_img/3D/'}[hps.problem]
+        hps.data_dir = {'brain2D': './data_loaders/Brain_img/2D/'}[hps.problem]
 
     if hps.sample_dir == "":
-        hps.sample_dir = {'brain3D': './data_loaders/brain3D_sample_'}[hps.problem]
-
-    if hps.problem == 'lsun_realnvp':
-        hps.rnd_crop = True
-    else:
-        hps.rnd_crop = False
+        hps.sample_dir = {'brain2D': './data_loaders/brain2D_sample_'}[hps.problem]
 
 
     # Use anchor_size to rescale batch size based on image_size
@@ -193,9 +188,9 @@ def get_data(hps, sess):
     print("Rank {} Batch sizes Train {} Test {} Init {}".format(
         hvd.rank(), hps.local_batch_train, hps.local_batch_test, hps.local_batch_init))
 
-    if hps.problem in ['brain3D']:
+    if hps.problem in ['brain2D']:
         hps.direct_iterator = True
-        import data_loaders.get_data_brain_3D as v
+        import data_loaders.get_data_brain_2D_cond as v
         train_iterator, test_iterator, data_init = \
             v.get_data(sess, hps.data_dir, hvd.size(), hvd.rank(), hps.pmap, hps.fmap,
                        hps.local_batch_train, hps.local_batch_test,
@@ -246,7 +241,7 @@ def tensorflow_session():
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
     # Pin GPU to local rank (one GPU per process)
-    config.gpu_options.visible_device_list = '0,1' #'str(hvd.local_rank())
+    config.gpu_options.visible_device_list = '0' #'str(hvd.local_rank())
     sess = tf.Session(config=config)
     return sess
 
@@ -308,7 +303,7 @@ def train(sess, model, hps, logdir, visualise):
             # checkpoint =model.train(lr)
             # print(checkpoint)
             train_results += [model.train(lr)]
-            print(train_results[-1][-4:])
+            # print(train_results[-1][-4:])
 
             if hps.verbose and hvd.rank() == 0:
                 _print(n_processed, time.time()-_t, train_results[-1])
@@ -448,7 +443,7 @@ def main(hps):
     tf.set_random_seed(hvd.rank() + hvd.size() * hps.seed)
     np.random.seed(hvd.rank() + hvd.size() * hps.seed)
     if hps.n_train is None:
-        hps.n_train = { 'brain3D':726}[hps.problem]
+        hps.n_train = { 'brain2D':726}[hps.problem]
 
     # Get data and set train_its and valid_its
     train_iterator, test_iterator, data_init = get_data(hps, sess)
@@ -500,7 +495,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--verbose", action='store_true', help="Verbose mode")
-    parser.add_argument("--restore_path", type=str, default='./logs',
+    parser.add_argument("--restore_path", type=str, default='',
                         help="Location of checkpoint to restore")
     parser.add_argument("--inference", default=False, #action="store_true",
                         help="Use in inference mode")
@@ -509,8 +504,8 @@ if __name__ == "__main__":
 
 
     # Dataset hyperparams:
-    parser.add_argument("--problem", type=str, default='brain3D',
-                        help="Problem (brain3D")
+    parser.add_argument("--problem", type=str, default='brain2D',
+                        help="Problem (brain2D")
     parser.add_argument("--att",  type=str, default='age',
                         help="Problem (group/adas/age/apoe/cdr/dxbl/gender/mmse/ravlt")
     parser.add_argument("--data_dir", type=str, default='',
@@ -569,7 +564,7 @@ if __name__ == "__main__":
                         help="Anchor size for deciding batch size")
     parser.add_argument("--width", type=int, default=512,
                         help="Width of hidden layers")
-    parser.add_argument("--depth", type=int, default=8,
+    parser.add_argument("--depth", type=int, default=2,
                         help="Depth of network")
     parser.add_argument("--weight_y", type=float, default=0.01,
                         help="Weight of log p(y|x) in weighted loss")
