@@ -17,7 +17,16 @@ def abstract_model_xy(sess, hps, feeds, train_iterator, test_iterator, data_init
     m.lr = lr
 
     # === Loss and optimizer
-    loss_train, stats_train = f_loss(train_iterator, True)
+    loss_train, stats_train= f_loss(train_iterator, True)
+
+    # TESTING PARAMS ======================================================================================
+    # m.y_onehot = y_onehot
+    # m.y_u_logit = y_u_logit
+    # class_pred = tf.nn.softmax(y_u_logit[:, 0:3])
+    # other_pred = tf.nn.sigmoid(y_u_logit[:, 4:12])
+    # m.y_u_pred = tf.concat([class_pred, other_pred], axis=1)
+    # =====================================================================================================
+
     all_params = tf.trainable_variables()
 
     if not hps.inference:  # computing gradients during training time
@@ -33,8 +42,6 @@ def abstract_model_xy(sess, hps, feeds, train_iterator, test_iterator, data_init
 
             train_op, polyak_swap_op, ema = optimizer(
                 all_params, gs, alpha=lr, hps=hps)
-
-
 
         if hps.direct_iterator:
             m.train = lambda _lr: sess.run([train_op, stats_train], {lr: _lr})[1]
@@ -184,16 +191,13 @@ def prior(name, top_shape, hps, y, z_prior=None):
     return logp, sample, eps, mean, logsd
 
 
-
-
-
 def model(sess, hps, train_iterator, test_iterator, data_init):
 
     # Only for decoding/init, rest use iterators directly
     with tf.name_scope('input'):
-        X_m = tf.placeholder(tf.float32, [None] + hps.mri_size, name='image_input')
-        X_p = tf.placeholder(tf.float32, [None] + hps.pet_size, name='image_ouput')
-        Y = tf.placeholder(tf.float32, [None], name='label')
+        X_m = tf.placeholder(tf.float32, [None] + hps.input_size, name='image_input')
+        X_p = tf.placeholder(tf.float32, [None] + hps.output_size, name='image_ouput')
+        Y = tf.placeholder(tf.float32, [None] + [hps.n_y], name='label')
         lr = tf.placeholder(tf.float32, None, name='learning_rate')
 
     encoder, decoder = codec(hps)
@@ -218,23 +222,28 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
     # cut-off l1_loss
     def losses(pred, label, type='l1'):
         if type=='l1':
-            l = tf.losses.absolute_difference(pred, label)
-        elif type=='crossEntropy':
-            l = tf.nn.softmax_cross_entropy_with_logits_v2(labels=label,logits=pred)
+            return tf.losses.absolute_difference(pred, label)
+        elif type=='softmaxCrossEntropy':
+            return tf.nn.softmax_cross_entropy_with_logits_v2(labels=label, logits=pred)
+        elif type=='sigmoidCrossEntropy':
+            return tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(labels=label, logits=pred), axis=1)
+        else:
+            raise Exception()
         # if cut_off:
         #     return tf.clip_by_value(l1, 0, hps.cut_off)
         # else:
         #     return l1
-        return l
+        # return l
 
     def _f_loss(x_m, x_p, y, is_training, reuse=False):
 
         with tf.variable_scope('model', reuse=reuse):
             if hps.ycond:
-                y_onehot = tf.expand_dims(y, 1)#tf.cast(tf.one_hot(y, hps.n_y, 1, 0), 'float32')
-                # y_onehot = tf.cast(tf.one_hot(y, hps.n_y, 1, 0), 'float32')
-                if hps.att in ['age', 'group']:
-                    y_onehot -= 0.5
+                y_onehot = y
+                # y_onehot = tf.expand_dims(y, 1)#tf.cast(tf.one_hot(y, hps.n_y, 1, 0), 'float32')
+                # # y_onehot = tf.cast(tf.one_hot(y, hps.n_y, 1, 0), 'float32')
+                # if hps.att in ['age', 'group']:
+                #     y_onehot -= 0.5
             else:
                 y_onehot = None
 
@@ -286,33 +295,48 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
                 x_o.get_shape()[2]) * int(x_o.get_shape()[3]))  # bits per subpixel
             #######################################
 
+            regression_loss_o_list = []
             # Predictive loss
             if hps.weight_y > 0 and hps.ycond:
                 # z_u_f = Z.list_unsqueeze3d(zs_u)  # assemble
                 y_u_logits = Z.linear_MLP('discriminator_u', z_u, out_final=hps.n_y)
-
-                regression_loss_o_list = []
                 for i in range(len(zs_o)):
                     if i == len(zs_o)-1 :
                         use_grl = False
                     else:
                         use_grl = True
                     y_o_logits = Z.linear_MLP('discriminator_O_' + str(i), zs_o[i], out_final=hps.n_y, use_grl=use_grl)
-                    regression_loss_o_list.append(losses(y_onehot, y_o_logits, type='l1') / np.log(2.))
+                    if hps.problem in ['brain2D']:
+                        regression_loss_o_list.append(losses(y_o_logits, y_onehot, type='l1') / np.log(2.))
+                    elif hps.problem in ['UT50k']:
+                        # regression_loss_o_list.append(losses(y_o_logits, y_onehot, type='sigmoidCrossEntropy'))
+                        class_loss = losses(y_o_logits[:, 0:3], y_onehot[:, 0:3], type='softmaxCrossEntropy')
+                        other_loss = losses(y_o_logits[:, 4:12], y_onehot[:, 4:12], type='sigmoidCrossEntropy')
+                        regression_loss_o = class_loss + other_loss
+                        regression_loss_o_list.append(regression_loss_o)
+                    else:
+                        raise Exception()
 
                 # Regression loss
                 # bits_y = tf.zeros_like(bits_x_u)
-                regression_loss_u = losses(y_onehot, y_u_logits, type='l1') / np.log(2.)
+                if hps.problem in ['brain2D']:
+                    regression_loss_u = losses(y_u_logits, y_onehot, type='l1') / np.log(2.)
+                elif hps.problem in ['UT50k']:
+                    # regression_loss_u = losses(y_u_logits, y_onehot, type='sigmoidCrossEntropy')
+                    class_loss = losses(y_u_logits[:, 0:3], y_onehot[:, 0:3], type='softmaxCrossEntropy')
+                    other_loss = losses(y_u_logits[:, 4:12], y_onehot[:, 4:12], type='sigmoidCrossEntropy')
+                    regression_loss_u = (class_loss + other_loss)
+                else:
+                    raise Exception()
                 regression_loss_o = sum(regression_loss_o_list) / len(regression_loss_o_list)
-
 
                 # y_predicted = tf.argmax(y_logits, 1, output_type=tf.int32)
                 # classification_error = 1 - \
                 #     tf.cast(tf.equal(y_predicted, y), tf.float32)
             else:
                 # bits_y = tf.zeros_like(bits_x_u)
-                regression_loss_u = 0
-                regression_loss_o = 0
+                regression_loss_u = 0.0
+                regression_loss_o = 0.0
 
         return bits_x_u, regression_loss_u, regression_loss_o, bits_x_o, \
                regression_loss_o_list
@@ -323,10 +347,11 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
         else:
             x_m, x_p, y = X_m, X_p, Y
 
-        bits_x_u, reg_loss_u, reg_loss_o, bits_x_o, reg_o_list= _f_loss(x_m, x_p, y, is_training, reuse)
-        local_loss = bits_x_u + hps.weight_lambda * bits_x_o +  hps.weight_y * (reg_loss_u + reg_loss_o)
+        bits_x_u, reg_loss_u, reg_loss_o, bits_x_o, reg_o_list = _f_loss(x_m, x_p, y, is_training, reuse)
+        local_loss = bits_x_u + hps.weight_lambda * bits_x_o + hps.weight_y * (reg_loss_u + reg_loss_o)
 
-        stats = [local_loss, bits_x_u, bits_x_o, reg_loss_u, reg_loss_o] + reg_o_list
+        # stats = [local_loss, bits_x_u, bits_x_o, reg_loss_u, reg_loss_o] + reg_o_list
+        stats = [local_loss, bits_x_u, bits_x_o, reg_loss_u, reg_loss_o]
         global_stats = Z.allreduce_mean(
             tf.stack([tf.reduce_mean(i) for i in stats]))
 
@@ -341,7 +366,8 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
         with tf.variable_scope('model', reuse=True):
             if hps.ycond:
                 # y_onehot = tf.cast(tf.one_hot(y, hps.n_y, 1, 0), 'float32')
-                y_onehot = tf.expand_dims(y, 1)
+                # y_onehot = tf.expand_dims(y, 1)
+                y_onehot = y
             else:
                 y_onehot = None
             top_shape = [tf.shape(z_prior)[0]] + hps.top_shape1

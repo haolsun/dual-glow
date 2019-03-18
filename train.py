@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 # Modified Horovod MNIST example
+from __future__ import print_function, absolute_import, division
 
 import os,sys,time
 
@@ -11,6 +12,8 @@ import graphics
 from utils import ResultLogger
 import nibabel as nib
 from PIL import Image
+from config import ModelConfig
+from matplotlib import pyplot as plt
 
 learn = tf.contrib.learn
 
@@ -20,6 +23,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 
 def _print(*args, **kwargs):
+    # pass
     if hvd.rank() == 0:
         print(*args, **kwargs)
 
@@ -76,7 +80,7 @@ def init_play(hps, model, logdir):
 
         for i in range(len(x_samples)):
             x_sample = np.reshape(
-                x_samples[i], [n_batch] + hps.pet_size)
+                x_samples[i], [n_batch] + hps.input_size)
             ############## save nii file #############
             for j in range(x_sample.shape[0]):
                 nii = nib.Nifti1Image(x_sample[j,:,:,:], np.eye(4))
@@ -120,7 +124,12 @@ def init_visualizations(hps, model, logdir, iterator):
 
         val_x_m = np.load(hps.sample_dir + 'm.npy')
         val_x_p = np.load(hps.sample_dir + 'p.npy')
-        val_y = np.load(hps.sample_dir + 'label_' + hps.att + '.npy')
+        if hps.problem in ["brain2D"]:
+            val_y = np.load(hps.sample_dir + 'label_' + hps.att + '.npy')
+        elif hps.problem in ["UT50k"]:
+            val_y = np.load(hps.sample_dir + 'labels.npy')
+        else:
+            raise Exception()
 
         # if hps.ycond:
         #     y = np.load(hps.sample_dir + 'label_' + str(hps.att_id) +'.npy')
@@ -145,7 +154,7 @@ def init_visualizations(hps, model, logdir, iterator):
 
         for i in range(len(x_samples)):
             x_sample = np.reshape(
-                x_samples[i], [n_batch] + hps.pet_size)
+                x_samples[i], [n_batch] + hps.input_size)
             ############## save nii file #############
             # for j in range(x_sample.shape[0]):
             #     nii = nib.Nifti1Image(x_sample[j,:,:,:], np.eye(4))
@@ -158,23 +167,25 @@ def init_visualizations(hps, model, logdir, iterator):
 
     return draw_samples
 
+
 # ===
 # Code for getting data
 # ===
 def get_data(hps, sess):
-    if hps.pet_size == -1:
-        hps.pet_size = {'brain2D': [128, 96, 1]}[hps.problem]
-    if hps.mri_size == -1:
-        hps.mri_size = {'brain2D': [128, 96, 1]}[hps.problem]
+    if hps.input_size == -1:
+        hps.input_size = ModelConfig.input_dim[hps.problem]
+    if hps.output_size == -1:
+        hps.output_size = ModelConfig.output_dim[hps.problem]
     if hps.n_test == -1:
-        hps.n_test = {'brain2D': 80}[hps.problem]
-    hps.n_y = {'brain2D': 1}[hps.problem]
+        hps.n_test = ModelConfig.n_test[hps.problem]
+    hps.n_y = ModelConfig.n_y[hps.problem]
+    hps.att = ModelConfig.attributes[hps.problem]
 
     if hps.data_dir == "":
-        hps.data_dir = {'brain2D': './data_loaders/Brain_img/2D/'}[hps.problem]
+        hps.data_dir = ModelConfig.data_dir[hps.problem]
 
     if hps.sample_dir == "":
-        hps.sample_dir = {'brain2D': './data_loaders/brain2D_sample_'}[hps.problem]
+        hps.sample_dir = ModelConfig.sample_dir[hps.problem]
 
 
     # Use anchor_size to rescale batch size based on image_size
@@ -195,6 +206,13 @@ def get_data(hps, sess):
             v.get_data(sess, hps.data_dir, hvd.size(), hvd.rank(), hps.pmap, hps.fmap,
                        hps.local_batch_train, hps.local_batch_test,
                        hps.local_batch_init, hps.att)
+    elif hps.problem in ['UT50k']:
+        hps.direct_iterator = True
+        import data_loaders.get_data_UT50k as v
+        train_iterator, test_iterator, data_init = \
+            v.get_data(sess, hps.data_dir, hvd.size(), hvd.rank(), hps.pmap, hps.fmap,
+                       hps.local_batch_train, hps.local_batch_test,
+                       hps.local_batch_init, hps.att)
     else:
         raise Exception()
 
@@ -208,6 +226,7 @@ def process_results(results):
     for i in range(len(stats)):
         res_dict[stats[i]] = "{:.4f}".format(results[i])
     return res_dict
+
 
 def list2string(list):
     str1 = ', '.join("{:.2f}".format(e) for e in list)
@@ -226,7 +245,7 @@ def get_its(hps):
         print(hps.n_test, hps.local_batch_test, hvd.size())
 
     # assert hps.n_test % (hps.local_batch_test * hvd.size()) == 0
-    full_test_its = hps.n_test // (hps.local_batch_test * hvd.size())
+    full_test_its = int(np.ceil(hps.n_test / (hps.local_batch_test * hvd.size())))
 
     if hvd.rank() == 0:
         print("Train epoch size: " + str(train_epoch))
@@ -245,6 +264,7 @@ def tensorflow_session():
     sess = tf.Session(config=config)
     return sess
 
+
 def parse_file(f_name):
     f = open(f_name, "r")
     s = f.read()
@@ -254,12 +274,14 @@ def parse_file(f_name):
     s_list = [int(i) for i in s_list]
     return s_list
 
+
 def write2file(f_name, d_list):
     f = open(f_name, "w")
     for i in d_list: 
         f.write(str(i) + '\n')
-    f.close
+    f.close()
     return 
+
 
 def train(sess, model, hps, logdir, visualise):
     _print(hps)
@@ -287,6 +309,8 @@ def train(sess, model, hps, logdir, visualise):
         test_logger = ResultLogger(logdir + "test.txt", **hps.__dict__)
 
     tcurr = time.time()
+    lr_max = hps.lr
+    lr_min = hps.lr / 100
     for epoch in range(e_h, hps.epochs):
 
         t = time.time()
@@ -295,14 +319,20 @@ def train(sess, model, hps, logdir, visualise):
         for it in range(hps.train_its):
 
             # Set learning rate, linearly annealed from 0 in the first hps.epochs_warmup epochs.
-            lr = hps.lr * min(1., n_processed /
-                              (hps.n_train * hps.epochs_warmup))
+            # lr = hps.lr * min(1., n_processed /
+            #                   (hps.n_train * hps.epochs_warmup))
+
+            # Learning rate cosine annealing
+            #
+            lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + np.cos(np.mod(n_processed, hps.lr_cycle * hps.n_train) * np.pi))
 
             # Run a training step synchronously.
             _t = time.time()
             # checkpoint =model.train(lr)
             # print(checkpoint)
+
             train_results += [model.train(lr)]
+            # print(train_results[-1:])
             # print(train_results[-1][-4:])
 
             if hps.verbose and hvd.rank() == 0:
@@ -315,7 +345,7 @@ def train(sess, model, hps, logdir, visualise):
             n_images += hvd.size() * hps.local_batch_train
 
         train_results = np.mean(np.asarray(train_results), axis=0)
-        train_results = train_results[:-4]
+        train_results = train_results[-5:]
 
         dtrain = time.time() - t
         ips = (hps.train_its * hvd.size() * hps.local_batch_train) / dtrain
@@ -338,7 +368,10 @@ def train(sess, model, hps, logdir, visualise):
                     test_results += [model.test()]
                 test_results = np.mean(np.asarray(test_results), axis=0)
 
-                test_results = test_results[:-4]
+                test_results = test_results[-5:]
+                # y_onehot, y_pred = sess.run([model.y_onehot, model.y_u_pred])
+                # print(y_onehot[0])
+                # print(y_pred[0])
 
                 if hvd.rank() == 0:
                     test_logger.log(epoch=epoch, n_processed=n_processed,
@@ -355,8 +388,8 @@ def train(sess, model, hps, logdir, visualise):
 
             # Sample
             t = time.time()
-            if epoch == 1 or epoch == 10 or epoch % hps.epochs_full_sample == 0:
-                visualise(epoch)
+            # if epoch == 1 or epoch == 10 or epoch % hps.epochs_full_sample == 0:
+            #     visualise(epoch)
             dsample = time.time() - t
 
             if hvd.rank() == 0:
@@ -431,6 +464,7 @@ def infer(sess, model, hps, iterator):
     # np.save('logs/z.npy', z)
     return zs
 
+
 def main(hps):
 
     # Initialize Horovod.
@@ -443,7 +477,7 @@ def main(hps):
     tf.set_random_seed(hvd.rank() + hvd.size() * hps.seed)
     np.random.seed(hvd.rank() + hvd.size() * hps.seed)
     if hps.n_train is None:
-        hps.n_train = { 'brain2D':726}[hps.problem]
+        hps.n_train = ModelConfig.n_train[hps.problem]
 
     # Get data and set train_its and valid_its
     train_iterator, test_iterator, data_init = get_data(hps, sess)
@@ -477,7 +511,6 @@ def main(hps):
     # play(0, 0.2)
     # play(0, 0.0)
 
-
     if not hps.inference:
         # Perform training
         train(sess, model, hps, logdir, visualise)
@@ -505,7 +538,7 @@ if __name__ == "__main__":
 
     # Dataset hyperparams:
     parser.add_argument("--problem", type=str, default='brain2D',
-                        help="Problem (brain2D")
+                        help="Problem (brain2D, UT50k)")
     parser.add_argument("--att",  type=str, default='age',
                         help="Problem (group/adas/age/apoe/cdr/dxbl/gender/mmse/ravlt")
     parser.add_argument("--data_dir", type=str, default='',
@@ -524,7 +557,6 @@ if __name__ == "__main__":
                         help="# Threads for parallel map")
 
     # Optimization hyperparams:
-    # Optimization hyperparams:
     parser.add_argument("--n_train", type=int, help="Train epoch size")
     parser.add_argument("--n_test", type=int, default=-1, help="Valid epoch size")
     parser.add_argument("--n_batch_train", type=int,
@@ -539,6 +571,10 @@ if __name__ == "__main__":
                         default="adamax", help="adam or adamax")
     parser.add_argument("--lr", type=float, default=0.001,
                         help="Base learning rate")
+    parser.add_argument("--lr_cycle", type=int, default=4,
+                        help="learning rate warm restarts cycle length (epochs)")
+    parser.add_argument("--lr_cycle_scaling", type=int, default=2,
+                        help="learning rate cycles scale rate after each cycle ends (Currently unused)")
     parser.add_argument("--beta1", type=float, default=.9, help="Adam beta1")
     parser.add_argument("--polyak_epochs", type=float, default=1,
                         help="Nr of averaging epochs for Polyak and beta2")
@@ -556,10 +592,10 @@ if __name__ == "__main__":
                         default=1, help="Use memory saving gradients")
 
     # Model hyperparams:
-    parser.add_argument("--pet_size", type=int,
-                        default=-1, help="PET size")
-    parser.add_argument("--mri_size", type=int,
-                        default=-1, help="MRI size")
+    parser.add_argument("--input_size", type=int,
+                        default=-1, help="Input size")
+    parser.add_argument("--output_size", type=int,
+                        default=-1, help="Output size")
     parser.add_argument("--anchor_size", type=int, default=32,
                         help="Anchor size for deciding batch size")
     parser.add_argument("--width", type=int, default=512,
@@ -584,7 +620,7 @@ if __name__ == "__main__":
     # Ablation
     parser.add_argument("--learntop", action="store_true",
                         help="Learn spatial prior")
-    parser.add_argument("--ycond", default=True, #action="store_true",
+    parser.add_argument("--ycond", action="store_true",
                         help="Use y conditioning")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--flow_permutation", type=int, default=2,

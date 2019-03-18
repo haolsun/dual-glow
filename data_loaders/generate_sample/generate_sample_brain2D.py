@@ -189,7 +189,7 @@ def main():
 
     np.save('../brain2D_sample_m', IMG_m)
     np.save('../brain2D_sample_p', IMG_p)
-    np.save('../brain2D_sample_label_'+att, y)
+    np.save('../brain2D_sample_label', y)
 
 if __name__ == "__main__":
     main()
