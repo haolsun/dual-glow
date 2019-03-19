@@ -1,2 +1,2 @@
 # dual-glow-ycond
-run sudo pip3 install toposort,nibabel
+run *sudo pip3 install toposort,nibabel*
