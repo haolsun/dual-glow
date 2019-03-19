@@ -154,7 +154,7 @@ def init_visualizations(hps, model, logdir, iterator):
 
         for i in range(len(x_samples)):
             x_sample = np.reshape(
-                x_samples[i], [n_batch] + hps.input_size)
+                x_samples[i], [n_batch] + hps.output_size)
             ############## save nii file #############
             # for j in range(x_sample.shape[0]):
             #     nii = nib.Nifti1Image(x_sample[j,:,:,:], np.eye(4))
@@ -388,8 +388,8 @@ def train(sess, model, hps, logdir, visualise):
 
             # Sample
             t = time.time()
-            # if epoch == 1 or epoch == 10 or epoch % hps.epochs_full_sample == 0:
-            #     visualise(epoch)
+            if epoch == 1 or epoch == 10 or epoch % hps.epochs_full_sample == 0:
+                 visualise(epoch)
             dsample = time.time() - t
 
             if hvd.rank() == 0:
@@ -587,7 +587,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs_full_valid", type=int,
                         default=1, help="Epochs between valid")
     parser.add_argument("--epochs_full_sample", type=int,
-                        default=3, help="Epochs between full scale sample")
+                        default=1, help="Epochs between full scale sample")
     parser.add_argument("--gradient_checkpointing", type=int,
                         default=1, help="Use memory saving gradients")
 
