@@ -67,7 +67,7 @@ def get_data(sess, data_dir, shards, rank, pmap, fmap, n_batch_train, n_batch_te
 
     data_init = make_batch(sess, train_itr, n_batch_train, n_batch_init)
 
-    return train_itr, valid_itr, data_init, train_size, valid_size
+    return train_itr, valid_itr, data_init, 10, 1#train_size, valid_size
 
 
 def make_batch(sess, itr, itr_batch_size, required_batch_size):

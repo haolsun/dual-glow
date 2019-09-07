@@ -248,7 +248,7 @@ def model(sess, hps, train_iterator, test_iterator, data_init):
             # observed
             hps.top_shape2 = Z.int_shape(z_o)[1:]
             top_shape2 = [tf.shape(z_o)[0]] + hps.top_shape2
-            logp_o, _, _eps_o,_ ,_= prior("prior_o", top_shape2, hps, y=None, z_prior=None)  ## input for prior_o : z_u, y    without prior   !!!!!!!!!!
+            logp_o, _, _eps_o,_ ,_= prior("prior_o", top_shape2, hps, y=None, z_prior=None)  ## input for prior_o : z_u, y
             objective_o += logp_o(z_o)
             eps_o.append(_eps_o(z_o))
 

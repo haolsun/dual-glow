@@ -69,7 +69,7 @@ def init_visualizations(hps, model, logdir, iterator):
 
         for i in range(len(x_samples)):
             x_sample = np.reshape(
-                x_samples[i], [n_batch] + hps.pet_size)
+                x_samples[i], [n_batch] + hps.output_size)
             ############## save nii file #############
             for j in range(x_sample.shape[0]):
                 nii = nib.Nifti1Image(x_sample[j,:,:,:], np.eye(4))
@@ -142,7 +142,7 @@ def get_data(hps, sess):
 
 
 def process_results(results):
-    stats = ['loss', 'bits_x_u', 'bits_x_o', 'bits_y', 'reg_loss']
+    stats = ['loss', 'bits_x_u', 'bits_x_o', 'bits_y']
     assert len(stats) == results.shape[0]
     res_dict = {}
     for i in range(len(stats)):
@@ -287,8 +287,8 @@ def train(sess, model, hps, logdir, visualise):
                 {
                     'current_epoch': epoch, 
                     'n_processed': n_processed, 
-                    'train_loss_best': train_loss_best, 
-                    'test_loss_best': test_loss_best
+                    'train_loss_best': str(train_loss_best), 
+                    'test_loss_best': str(test_loss_best)
                 }
                 )
 
@@ -328,8 +328,8 @@ def train(sess, model, hps, logdir, visualise):
                             {
                                 'current_epoch': epoch, 
                                 'n_processed': n_processed, 
-                                'train_loss_best': train_loss_best, 
-                                'test_loss_best': test_loss_best
+                                'train_loss_best': float(train_loss_best), 
+                                'test_loss_best': float(test_loss_best)
                             }
                             )
                         msg += ' *'
